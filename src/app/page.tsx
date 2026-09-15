@@ -4,6 +4,41 @@ import { useState } from "react";
 
 export default function Home() {
   const [url, setUrl] = useState("");
+  const [result, setResult] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  async function analyzeAd() {
+    if (!url.trim()) {
+      setResult("حط رابط الإعلان أولاً");
+      return;
+    }
+
+    setLoading(true);
+    setResult("");
+
+    try {
+      const response = await fetch("/api/analyze", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ url }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok) {
+        setResult(data.error || "حدث خطأ");
+        return;
+      }
+
+      setResult(data.message);
+    } catch {
+      setResult("تعذر الاتصال بنظام التحليل");
+    } finally {
+      setLoading(false);
+    }
+  }
 
   return (
     <main
@@ -38,7 +73,8 @@ export default function Home() {
       />
 
       <button
-        onClick={() => alert("تم استلام الرابط: " + url)}
+        onClick={analyzeAd}
+        disabled={loading}
         style={{
           width: "100%",
           padding: "15px",
@@ -46,8 +82,20 @@ export default function Home() {
           cursor: "pointer",
         }}
       >
-        تحليل الإعلان
+        {loading ? "جاري التحليل..." : "تحليل الإعلان"}
       </button>
+
+      {result && (
+        <p
+          style={{
+            marginTop: "20px",
+            padding: "15px",
+            border: "1px solid #ccc",
+          }}
+        >
+          {result}
+        </p>
+      )}
     </main>
   );
 }
