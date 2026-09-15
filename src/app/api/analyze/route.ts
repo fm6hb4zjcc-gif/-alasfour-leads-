@@ -1,44 +1,106 @@
 import { NextResponse } from "next/server";
 
+function extractOutputText(data: any): string {
+  if (typeof data?.output_text === "string" && data.output_text.trim()) {
+    return data.output_text.trim();
+  }
+
+  if (Array.isArray(data?.output)) {
+    for (const item of data.output) {
+      if (!Array.isArray(item?.content)) continue;
+
+      for (const content of item.content) {
+        if (
+          (content?.type === "output_text" || content?.type === "text") &&
+          typeof content?.text === "string"
+        ) {
+          return content.text.trim();
+        }
+      }
+    }
+  }
+
+  return "";
+}
+
+function parseJsonResult(text: string) {
+  const cleaned = text
+    .replace(/```json/gi, "")
+    .replace(/```/g, "")
+    .trim();
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+
+    if (firstBrace !== -1 && lastBrace !== -1) {
+      const jsonPart = cleaned.slice(firstBrace, lastBrace + 1);
+      return JSON.parse(jsonPart);
+    }
+
+    throw new Error("Invalid JSON returned by AI");
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const body = await request.json();
     const url = body.url;
 
-    if (!url) {
+    if (!url || typeof url !== "string") {
       return NextResponse.json(
         { error: "Ad URL is required" },
         { status: 400 }
       );
     }
 
-    const response = await fetch(url, {
+    let parsedUrl: URL;
+
+    try {
+      parsedUrl = new URL(url);
+    } catch {
+      return NextResponse.json(
+        { error: "Invalid advertisement URL" },
+        { status: 400 }
+      );
+    }
+
+    const pageResponse = await fetch(parsedUrl.toString(), {
       headers: {
         "User-Agent":
-          "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148 Safari/604.1",
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 Version/18.0 Mobile/15E148 Safari/604.1",
+        "Accept-Language": "ar,en;q=0.9",
       },
-      signal: AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(15000),
+      cache: "no-store",
     });
 
-    if (!response.ok) {
+    if (!pageResponse.ok) {
       return NextResponse.json(
         {
           error: "Could not access the advertisement page",
-          status: response.status,
+          status: pageResponse.status,
         },
         { status: 502 }
       );
     }
 
-    const html = await response.text();
+    const html = await pageResponse.text();
 
     const text = html
       .replace(/<script[\s\S]*?<\/script>/gi, " ")
       .replace(/<style[\s\S]*?<\/style>/gi, " ")
+      .replace(/<noscript[\s\S]*?<\/noscript>/gi, " ")
       .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;/gi, "'")
       .replace(/\s+/g, " ")
       .trim()
-      .slice(0, 15000);
+      .slice(0, 12000);
 
     if (!text) {
       return NextResponse.json(
@@ -50,14 +112,57 @@ export async function POST(request: Request) {
     const apiKey = process.env.OPENAI_API_KEY;
 
     if (!apiKey) {
-      return NextResponse.json({
-        success: true,
-        status: "content_found",
-        message:
-          "Advertisement content was found. Add the OpenAI API key to enable AI owner analysis.",
-        preview: text.slice(0, 1000),
-      });
+      return NextResponse.json(
+        { error: "OPENAI_API_KEY is missing" },
+        { status: 500 }
+      );
     }
+
+    const prompt = `
+Analyze this public Kuwait real-estate advertisement.
+
+Classify ONLY the advertiser:
+- owner = likely direct owner
+- office_company = real-estate office, broker, agent, or company
+- unclear = not enough evidence
+
+Do not claim legally verified ownership.
+
+Return ONLY one JSON object.
+Do not use markdown.
+Do not use code fences.
+Do not add any text before or after the JSON.
+
+Use exactly this structure:
+
+{
+  "classification": "owner",
+  "owner_score": 0,
+  "confidence": "low",
+  "property_type": "",
+  "location": "",
+  "price": "",
+  "advertiser": "",
+  "phone": "",
+  "reasons": []
+}
+
+Rules:
+- classification must be: owner, office_company, or unclear
+- owner_score must be a number from 0 to 100
+- confidence must be: low, medium, or high
+- Never invent missing information
+- If a field is not present, return an empty string
+- reasons must contain short factual reasons based only on the advertisement
+- Company names, brokerage wording, office terminology, or clear broker language are evidence for office_company
+- Phrases such as direct from owner or no intermediary are evidence for owner
+
+Advertisement URL:
+${url}
+
+Advertisement page text:
+${text}
+`;
 
     const aiResponse = await fetch(
       "https://api.openai.com/v1/responses",
@@ -68,47 +173,8 @@ export async function POST(request: Request) {
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify({
-          model: "gpt-5-mini",
-          input: `
-You are a Kuwait real-estate lead classification agent.
-
-Analyze this publicly available real-estate advertisement.
-
-Your job is NOT to claim that someone is legally the owner.
-Determine whether the advertiser appears to be:
-1. A direct owner
-2. A real-estate office/company
-3. Unclear
-
-Return ONLY valid JSON:
-
-{
-  "classification": "owner" | "office_company" | "unclear",
-  "owner_score": 0,
-  "confidence": "low" | "medium" | "high",
-  "property_type": "",
-  "location": "",
-  "price": "",
-  "advertiser": "",
-  "phone": "",
-  "reasons": []
-}
-
-Owner score must be from 0 to 100.
-
-Important:
-- Never invent a name, phone number, price or ownership.
-- Only use information actually present in the advertisement.
-- "Owner" means "likely direct advertiser/owner", not legally verified ownership.
-- Look for terms such as "from owner", "direct owner", "without intermediary".
-- Look for company/office indicators such as company names, many listings, brokerage language, or office terminology.
-
-Advertisement URL:
-${url}
-
-Advertisement text:
-${text}
-          `,
+          model: "gpt-5.4-mini",
+          input: prompt,
         }),
       }
     );
@@ -119,30 +185,36 @@ ${text}
       return NextResponse.json(
         {
           error: "AI analysis failed",
-          details: errorText.slice(0, 500),
+          details: errorText.slice(0, 800),
         },
         { status: 502 }
       );
     }
 
     const aiData = await aiResponse.json();
+    const outputText = extractOutputText(aiData);
 
-    const output =
-      aiData.output_text ||
-      aiData.output?.[0]?.content?.[0]?.text ||
-      "";
+    if (!outputText) {
+      return NextResponse.json(
+        {
+          error: "AI returned no readable text",
+        },
+        { status: 502 }
+      );
+    }
 
     let analysis;
 
     try {
-      analysis = JSON.parse(output);
+      analysis = parseJsonResult(outputText);
     } catch {
-      analysis = {
-        classification: "unclear",
-        owner_score: 0,
-        confidence: "low",
-        reasons: ["AI returned an unreadable result"],
-      };
+      return NextResponse.json(
+        {
+          error: "AI returned invalid JSON",
+          raw: outputText.slice(0, 1000),
+        },
+        { status: 502 }
+      );
     }
 
     return NextResponse.json({
