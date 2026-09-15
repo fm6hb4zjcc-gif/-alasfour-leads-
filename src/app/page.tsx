@@ -2,19 +2,34 @@
 
 import { useState } from "react";
 
+type Analysis = {
+  classification?: "owner" | "office_company" | "unclear";
+  owner_score?: number;
+  confidence?: "low" | "medium" | "high";
+  property_type?: string;
+  location?: string;
+  price?: string;
+  advertiser?: string;
+  phone?: string;
+  reasons?: string[];
+};
+
 export default function Home() {
   const [url, setUrl] = useState("");
-  const [result, setResult] = useState("");
+  const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [message, setMessage] = useState("");
   const [loading, setLoading] = useState(false);
 
   async function analyzeAd() {
     if (!url.trim()) {
-      setResult("حط رابط الإعلان أولاً");
+      setMessage("حط رابط الإعلان أولاً");
+      setAnalysis(null);
       return;
     }
 
     setLoading(true);
-    setResult("");
+    setMessage("");
+    setAnalysis(null);
 
     try {
       const response = await fetch("/api/analyze", {
@@ -28,16 +43,26 @@ export default function Home() {
       const data = await response.json();
 
       if (!response.ok) {
-        setResult(data.error || "حدث خطأ");
+        setMessage(data.error || "حدث خطأ أثناء التحليل");
         return;
       }
 
-      setResult(data.message);
+      if (data.analysis) {
+        setAnalysis(data.analysis);
+      } else {
+        setMessage(data.message || "تم التحليل ولكن لم ترجع نتيجة");
+      }
     } catch {
-      setResult("تعذر الاتصال بنظام التحليل");
+      setMessage("تعذر الاتصال بنظام التحليل");
     } finally {
       setLoading(false);
     }
+  }
+
+  function classificationLabel(value?: string) {
+    if (value === "owner") return "مالك محتمل";
+    if (value === "office_company") return "مكتب / شركة عقارية";
+    return "غير واضح";
   }
 
   return (
@@ -69,6 +94,7 @@ export default function Home() {
           padding: "15px",
           fontSize: "16px",
           marginBottom: "15px",
+          boxSizing: "border-box",
         }}
       />
 
@@ -85,16 +111,72 @@ export default function Home() {
         {loading ? "جاري التحليل..." : "تحليل الإعلان"}
       </button>
 
-      {result && (
-        <p
+      {message && (
+        <div
           style={{
             marginTop: "20px",
             padding: "15px",
             border: "1px solid #ccc",
           }}
         >
-          {result}
-        </p>
+          {message}
+        </div>
+      )}
+
+      {analysis && (
+        <div
+          style={{
+            marginTop: "20px",
+            padding: "20px",
+            border: "1px solid #ccc",
+            borderRadius: "10px",
+          }}
+        >
+          <h2>{classificationLabel(analysis.classification)}</h2>
+
+          <p>
+            <strong>نسبة احتمال المالك:</strong>{" "}
+            {analysis.owner_score ?? 0}%
+          </p>
+
+          <p>
+            <strong>الثقة:</strong> {analysis.confidence || "غير محدد"}
+          </p>
+
+          <p>
+            <strong>نوع العقار:</strong>{" "}
+            {analysis.property_type || "غير مذكور"}
+          </p>
+
+          <p>
+            <strong>المنطقة:</strong>{" "}
+            {analysis.location || "غير مذكورة"}
+          </p>
+
+          <p>
+            <strong>السعر:</strong> {analysis.price || "غير مذكور"}
+          </p>
+
+          <p>
+            <strong>المعلن:</strong>{" "}
+            {analysis.advertiser || "غير مذكور"}
+          </p>
+
+          <p>
+            <strong>الهاتف:</strong> {analysis.phone || "غير مذكور"}
+          </p>
+
+          {analysis.reasons && analysis.reasons.length > 0 && (
+            <>
+              <strong>أسباب التصنيف:</strong>
+              <ul>
+                {analysis.reasons.map((reason, index) => (
+                  <li key={index}>{reason}</li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
       )}
     </main>
   );
